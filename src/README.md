@@ -2,14 +2,46 @@
 
 **This is not an officially supported Google product.**
 
-WARNING: This library is still in developpment and we might make backward
+WARNING: This library is still in development and we might make backward
 incompatible changes at any moment.
 
-This repository contains a TypeScript library that provides a set of functions
-that can be use to create Trusted Types values safely.
+## What this library is about
 
-It also contains some typed helpers to help assigning Trusted Types values to
-sinks in a way compatible with [tsec](https://github.com/googleinterns/tsec).
+### A policy definition to build safe by construction Trusted Types
+
+Trusted Types is a browser API that enable developers to have control on the
+values that can be assigned to XSS sinks. Developers need to define a Trusted
+Type policy to build these values, and the Trusted Type API does constrain these
+policies. \
+The safevalues library provides a set of functions that can be use to create
+Trusted Types values safely, by construction or via escaping or sanitization.
+safevalues implements a Trusted Type policy (when available) under the hood.
+
+### Additional types for sinks not covered by Trusted Types
+
+Some DOM APIs are not covered by Trusted Types but can also be abused and lead
+to XSS. Other security mechanisms like the `unsafe-inline` CSP protection can
+help to lock them down, but not all browsers or apps support it. \
+Safevalues defines additional types, builders and setters to help protect these
+sinks.
+
+### DOM sink wrappers
+
+To build at a Trusted Type compatible app and surface potential violations at
+compile time, we recommend that you compile your code with
+[tsec](https://github.com/googleinterns/tsec). Tsec bans certain DOM APIs.
+safevalues defines wrappers around these APIs to let you assign Trusted Types
+with them.
+
+Certain wrappers don't require a particular type but sanitize the argument they
+get before they assign it to the DOM sink (e.g. `safeLocation.setHref`).
+
+### Trusted Type polyfills
+
+Whenever possible, safevalues uses Trusted Types to build its values, and
+benefit from the runtime protection of Trusted Types. When Trusted Type is not
+available, safevalues transparently defines it own types and you app can
+continue to work.
 
 ## Builders
 
@@ -32,6 +64,26 @@ import {htmlEscape} from 'safevalues';
 const html = htmlEscape('<img src=a onerror="javascript:alert()">');
 // SafeHtml{'&lt;img src=a onerror=&quot;javascript:alert()&quot;&gt'}
 ```
+
+#### HTML sanitizer
+
+An HTML sanitizer can take a user controlled value and sanitize it to produce a
+SafeHtml instance.
+
+```typescript
+import {HtmlSanitizerBuilder} from 'safevalues';
+
+const sanitizer = new HtmlSanitizerBuilder()
+                            .onlyAllowElements(new Set<string>(['article']))
+                            .build();
+const html = sanitizer.sanitize('<article>my post <script>alert(0)</script></article>');
+// SafeHtml{'<article>my post</article>}
+```
+
+#### Templating language
+
+For more complex HTML constructions, use a dedicated HTML templating system
+compatible with safevalues ~~like [Lit](https://lit.dev)~~. (soon)
 
 ### `SafeScript`
 
@@ -61,10 +113,10 @@ current origin. Only knowing the origin from which a url is from is not
 sufficient to ensure its safety as many domains have certain paths that
 implement open-redirects to arbitrary URLs.
 
-To ensure the safety of script URLs, we ensure that the developper knows the
-full origin (either by fully specifying it or by using the current origin
-implicitly with a path absolute url) as well as the path (no relative URLs are
-allowed & all interpolations are passed to `encodeURIComponent`)
+To ensure the safety of script URLs, we ensure that the developer knows the full
+origin (either by fully specifying it or by using the current origin implicitly
+with a path absolute url) as well as the path (no relative URLs are allowed &
+all interpolations are passed to `encodeURIComponent`)
 
 Note: this type aliases the
 [TrustedScriptURL](https://developer.mozilla.org/en-US/docs/Web/API/TrustedScriptURL)
@@ -82,7 +134,39 @@ const url2 = trustedResourceUrl`/static/${env}/js/main.js?opt=${opt}`;
 // TrustedResourceURL{'/static/a%2Fb/js/main.js?opt=min%26test%3D1'}
 ```
 
-<!-- TODO: Add documentation for SafeStyle and SafeStyleSheet. -->
+### `SafeStyle`
+
+#### Building a style value from a literal value with some banned characters
+
+Note: this type doesn't wrap a Trusted Type.
+
+```typescript
+import {safeStyle, concatStyles} from 'safevalues';
+
+const style1 = safeStyle`color: navy;`;
+// SafeStyle{'color: navy;'}
+const style2 = safeStyle`background: red;`;
+
+concatStyles([style1, style2]);
+// SafeStyle{'color: navy;background: red;'}
+```
+
+### `SafeStyleSheet`
+
+#### Building a style value from a literal value with some banned characters
+
+Note: this type doesn't wrap a Trusted Type.
+
+```typescript
+import {safeStyleSheet, concatStyleSheets} from 'safevalues';
+
+const styleSheet1 = safeStyleSheet`a { color: navy; }`;
+// SafeStyleSheet{'a {color: navy;}'}
+const styleSheet2 = safeStyle`b { color: red; }`;
+
+concatStyles([styleSheet1, styleSheet2]);
+// SafeStyleSheet{'a {color: navy;}b { color: red; }'}
+```
 
 ## Use with browsers that don't support Trusted Types
 
@@ -177,53 +261,5 @@ can reduce the impact of the issues above.
 WARNING: Make sure you use `tsec` to keep track of how your code is using these
 functions.
 
-### Legacy conversions
-
-When migrating from using string values to using Trusted Types, we often want to
-move the "sensitive" part of the code from where the value is used (`innerHTML`,
-`eval`, ect..) to where the value is constructed. This can be difficult as there
-is not always a direct path from creation to usage. Successfully changing the
-code might require updating many files at once.
-
-To avoid this issue, we provide a conversion from string -> Trusted Type that is
-unsafe, but can be used to make the code compatible with Trusted Type where the
-value is used. This function can then be "moved up" closer to where the values
-are created in independent changes. Once the conversion is in a place where the
-context makes it possible to construct the value safely, it can be removed
-completely.
-
-```typescript
-import {legacyUnsafeResourceUrl} from 'safevalues/unsafe/legacy';
-import {unwrapResourceUrl} from 'safevalues';
-
-// TODO: move legacyConversion to caller
-script.src = unwrapResourceUrl(legacyUnsafeResourceUrl(url)) as string;
-```
-
-### Reviewed conversions
-
-When creating Trusted Types, you might run into some use cases where the
-builders that are provided in this package don't match the needs of the
-particular application. Sometimes, the use case is narrow enough that it does
-not make sense to provide a library function. In these cases, if the context
-makes it obvious that the code cannot be misused to create unsafe values.
-
-If you are in a browser that has native support for TrustedTypes, you can create
-a new policy, add it to your headers and add an extensive comment explaining why
-it is safe to do so.
-
-If you are using tsec however, you can directly use a reviewed conversion which
-will let you create a polyfilled value & force you to provide a justification.
-
-```typescript
-import {scriptSafeByReview} from 'safevalues/unsafe/reviewed';
-import {unwrapScript} from 'safevalues';
-
-if (document.domain === '') {
-    const scriptText = scriptSafeByReview(
-        userInput,
-        `Even though the input is user controller, the wrapping if statement
-         ensures that this code is only ever run in a sandboxed origin`);
-    scriptEl.text = unwrapScript(scriptText) as string;
-}
-```
+More information:
+[Restricted functions documentation](https://github.com/google/safevalues/tree/main/src/restricted).
